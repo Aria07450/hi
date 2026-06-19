@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>手势特效切换器</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+    <style>
+        body{
+            margin:0;
+            overflow:hidden;
+            background:#000;
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            height:100vh;
+        }
+
+        .input_video{
+            display:none;
+        }
+    </style>
+</head>
+<body>
+
+<video class="input_video" autoplay playsinline></video>
+<canvas class="output_canvas" width="1280" height="720"></canvas>
+
+<script>
+const videoElement = document.querySelector('.input_video');
+const canvasElement = document.querySelector('.output_canvas');
+const canvasCtx = canvasElement.getContext('2d');
+
+
+// ─────────────────────────────────────────────
+// 手势工具
+// ─────────────────────────────────────────────
+function fingersUp(hand) {
+    let n = 0;
+    [[8,6],[12,10],[16,14],[20,18]].forEach(([t,p]) => {
+        if (hand[t].y < hand[p].y) n++;
+    });
+    return n;
+}
+
+function isPeace(hand) {
+    return hand[8].y < hand[6].y &&
+           hand[12].y < hand[10].y &&
+           hand[16].y > hand[14].y &&
+           hand[20].y > hand[18].y;
+}
+
+function palmPos(hand, W, H) {
+    const js = [0,5,9,13,17];
+    const s = js.reduce((a,i) => ({
+        x: a.x + hand[i].x,
+        y: a.y + hand[i].y
+    }), {x:0,y:0});
+
+    return {
+        x: s.x / js.length * W,
+        y: s.y / js.length * H
+    };
+}
+
+
+// ─────────────────────────────────────────────
+// BaseMode
+// ─────────────────────────────────────────────
+class BaseMode {
+    constructor(canvas, ctx) {
+        this.canvas = canvas;
+        this.ctx = ctx;
+    }
+
+    init() {}
+
+    update(landmarks, video) {
+        throw new Error("必须实现 update()");
+    }
+
+    destroy() {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+}
+
+
+// ─────────────────────────────────────────────
+// Mode 1: 粒子特效
+// ─────────────────────────────────────────────
+class ParticleMode extends BaseMode {
+    constructor(canvas, ctx) {
+        super(canvas, ctx);
+        this.particles = [];
+        this.fireworkCooldown = 0;
+        this.zezeTimer = 0;
+    }
+
+    init() {
+        this.particles = Array.from({ length: 80 }, () => ({
+            x: Math.random() * this.canvas.width,
+            y: Math.random() * this.canvas.height,
+            vx: (Math.random() - 0.5) * 1.5,
+            vy: (Math.random() - 0.5) * 1.5,
+            size: Math.random() * 3 + 1,
+            hue: Math.random() * 360,
+            alpha: Math.random() * 0.5 + 0.3,
+            isFirework: false,
+            life: 1
+        }));
+        this.fireworkCooldown = 0;
+        this.zezeTimer = 0;
+    }
+
+    _heartBurst(cx, cy) {
+        if (this.fireworkCooldown > 0) return;
+        this.fireworkCooldown = 40;
+
+        const baseHue = Math.random() * 60 + 330;
+
+        for (let i = 0; i < 80; i++) {
+            const t = (i / 80) * Math.PI * 2;
+            const hx = 16 * Math.pow(Math.sin(t), 3);
+            const hy = -(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t));
+
+            this.particles.push({
+                x: cx,
+                y: cy,
+                vx: hx * 1.5 + (Math.random() - 0.5) * 4,
+                vy: hy * 1.5 + (Math.random() - 0.5) * 4,
+                size: Math.random() * 5 + 2,
+                hue: baseHue + (Math.random() - 0.5) * 30,
+                isFirework: true,
+                life: 1.0
+            });
+        }
+    }
+
+    update(multiHandLandmarks, videoElement) {
+        const ctx = this.ctx;
+        const W = this.canvas.width, H = this.canvas.height;
+
+        if (this.fireworkCooldown > 0) this.fireworkCooldown--;
+
+        // 背景只保留非常轻的拖影，不压暗画面
+        ctx.drawImage(videoElement, 0, 0, W, H);
+        ctx.fillStyle = 'rgba(0,0,0,0.01)';
+        ctx.fillRect(0, 0, W, H);
+
+        if (multiHandLandmarks) {
+            if (
+                multiHandLandmarks.length >= 2 &&
+                isPeace(multiHandLandmarks[0]) &&
+                isPeace(multiHandLandmarks[1])
+            ) {
+                this.zezeTimer = 70;
+            }
+
+            multiHandLandmarks.forEach(hand => {
+                if (fingersUp(hand) >= 4) {
+                    const pos = palmPos(hand, W, H);
+                    this._heartBurst(pos.x, pos.y);
+                }
+            });
+        }
+
+        if (this.zezeTimer > 0) this.zezeTimer--;
+
+        // ZEZE：抵消外层镜像，正向显示
+        if (this.zezeTimer > 0) {
+            const alpha = Math.min(this.zezeTimer / 30, 1);
+            ctx.save();
+
+            ctx.translate(W, 0);
+            ctx.scale(-1, 1);
+
+            ctx.shadowColor = `rgba(255,100,200,${alpha})`;
+            ctx.shadowBlur = 60;
+            ctx.font = 'bold 200px Arial Black';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `rgba(255,200,240,${alpha})`;
+            ctx.fillText('ZEZE', W / 2, H / 2);
+
+            ctx.restore();
+        }
+
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+
+            if (p.isFirework) {
+                p.vy += 0.3;
+                p.vx *= 0.97;
+                p.vy *= 0.97;
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.016;
+
+                if (p.life <= 0) {
+                    this.particles.splice(i, 1);
+                    continue;
+                }
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+                ctx.fillStyle = `hsla(${p.hue},100%,65%,${p.life})`;
+                ctx.fill();
+            } else {
+                if (this.zezeTimer > 0) {
+                    const dx = W / 2 - p.x;
+                    const dy = H / 2 - p.y;
+                    const dist = Math.hypot(dx, dy);
+                    if (dist > 0) {
+                        p.vx += dx / dist * 0.4;
+                        p.vy += dy / dist * 0.4;
+                    }
+                }
+
+                p.vx *= 0.99;
+                p.vy *= 0.99;
+                p.x += p.vx;
+                p.y += p.vy;
+
+                if (p.x < 0) p.x = W;
+                if (p.x > W) p.x = 0;
+                if (p.y < 0) p.y = H;
+                if (p.y > H) p.y = 0;
+
+                p.hue = (p.hue + 0.5) % 360;
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fillStyle = `hsla(${p.hue},80%,70%,${p.alpha})`;
+                ctx.fill();
+            }
+        }
+    }
+
+    destroy() {
+        this.particles = [];
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+}
+
+
+// ─────────────────────────────────────────────
+// Mode 2: 取景器
+// ─────────────────────────────────────────────
+class ViewfinderMode extends BaseMode {
+    constructor(canvas, ctx) {
+        super(canvas, ctx);
+        this.motionValue = 0;
+    }
+
+    init() {}
+
+    update(multiHandLandmarks, videoElement) {
+        const ctx = this.ctx;
+        const W = this.canvas.width, H = this.canvas.height;
+
+        ctx.save();
+        ctx.filter = 'grayscale(100%)';
+        ctx.drawImage(videoElement, 0, 0, W, H);
+        ctx.restore();
+
+        if (multiHandLandmarks && multiHandLandmarks.length >= 2) {
+            const h1 = multiHandLandmarks[0], h2 = multiHandLandmarks[1];
+            const pts = [
+                { x: h1[4].x * W, y: h1[4].y * H },
+                { x: h1[8].x * W, y: h1[8].y * H },
+                { x: h2[4].x * W, y: h2[4].y * H },
+                { x: h2[8].x * W, y: h2[8].y * H },
+            ];
+
+            const minX = Math.min(...pts.map(p => p.x));
+            const maxX = Math.max(...pts.map(p => p.x));
+            const minY = Math.min(...pts.map(p => p.y));
+            const maxY = Math.max(...pts.map(p => p.y));
+
+            const rW = maxX - minX;
+            const rH = maxY - minY;
+            if (rW < 10 || rH < 10) return;
+
+            this.motionValue = Math.min(Math.hypot(rW, rH) / Math.hypot(W, H), 1);
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(minX, minY, rW, rH);
+            ctx.clip();
+            ctx.filter = 'none';
+            ctx.drawImage(videoElement, 0, 0, W, H);
+
+            ctx.lineWidth = 2 + this.motionValue * 6;
+            ctx.strokeStyle = `rgba(0,255,150,${0.5 + this.motionValue * 0.5})`;
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+}
+
+
+// ─────────────────────────────────────────────
+// Mode 3: 3D 粒子牵引
+// 规则：
+// 1. 不会随机自动生成粒子
+// 2. 只能靠你五指张开来生成
+// 3. 只有识别到食指伸出时才会被牵引
+// 4. 粒子带加速度和惯性，甩动手会更有“飞出去”的感觉
+// ─────────────────────────────────────────────
+class TetherMode extends BaseMode {
+    constructor(canvas, ctx) {
+        super(canvas, ctx);
+        this.particles = [];
+        this.focal = 500;
+        this.MAX_PARTICLES = 300;
+        this.spawnCooldown = {};
+        this.prevPalmPos = {};
+    }
+
+    init() {
+        this.particles = [];
+        this.spawnCooldown = {};
+        this.prevPalmPos = {};
+    }
+
+    isIndexOnly(hand) {
+        const index = hand[8].y < hand[6].y;
+        const middle = hand[12].y < hand[10].y;
+        const ring = hand[16].y < hand[14].y;
+        const pinky = hand[20].y < hand[18].y;
+        return index && !middle && !ring && !pinky;
+    }
+
+    _proj(x, y, z) {
+        const s = this.focal / (z + this.focal);
+        return {
+            sx: x * s + this.canvas.width / 2,
+            sy: y * s + this.canvas.height / 2,
+            s
+        };
+    }
+
+    _spawnAt(wx, wy, count = 30, impulse = { x: 0, y: 0, z: 0 }) {
+        const over = this.particles.length + count - this.MAX_PARTICLES;
+        if (over > 0) this.particles.splice(0, over);
+
+        for (let i = 0; i < count; i++) {
+            this.particles.push({
+                x: wx + (Math.random() - 0.5) * 40,
+                y: wy + (Math.random() - 0.5) * 40,
+                z: (Math.random() - 0.5) * 120,
+
+                vx: impulse.x + (Math.random() - 0.5) * 2.0,
+                vy: impulse.y + (Math.random() - 0.5) * 2.0,
+                vz: impulse.z + (Math.random() - 0.5) * 0.8,
+
+                ax: 0,
+                ay: 0,
+                az: 0,
+
+                size: Math.random() * 4 + 1,
+                hue: Math.random() * 360
+            });
+        }
+    }
+
+    update(multiHandLandmarks, videoElement) {
+        const ctx = this.ctx;
+        const W = this.canvas.width, H = this.canvas.height;
+
+        // 背景压暗层非常弱，避免画面发黑
+        ctx.drawImage(videoElement, 0, 0, W, H);
+        ctx.fillStyle = 'rgba(0,0,20,0.01)';
+        ctx.fillRect(0, 0, W, H);
+
+        const indexTips = [];
+
+        if (multiHandLandmarks) {
+            multiHandLandmarks.forEach((hand, hi) => {
+                const palm = palmPos(hand, W, H);
+
+                // 只认食指尖，不再用手掌中心
+                if (this.isIndexOnly(hand)) {
+                    indexTips.push({
+                        x: hand[8].x * W - W / 2,
+                        y: hand[8].y * H - H / 2,
+                        screenX: hand[8].x * W,
+                        screenY: hand[8].y * H
+                    });
+                }
+
+                // 只能五指张开时生成粒子
+                if (fingersUp(hand) >= 4) {
+                    const now = Date.now();
+                    if (!this.spawnCooldown[hi] || now - this.spawnCooldown[hi] > 500) {
+                        this.spawnCooldown[hi] = now;
+
+                        const wx = palm.x - W / 2;
+                        const wy = palm.y - H / 2;
+
+                        const prev = this.prevPalmPos[hi];
+                        let impulse = { x: 0, y: 0, z: 0 };
+
+                        if (prev) {
+                            impulse = {
+                                x: (wx - prev.x) * 0.12,
+                                y: (wy - prev.y) * 0.12,
+                                z: 0
+                            };
+                        }
+
+                        this._spawnAt(wx, wy, 30, impulse);
+                    }
+                }
+
+                this.prevPalmPos[hi] = {
+                    x: palm.x - W / 2,
+                    y: palm.y - H / 2
+                };
+            });
+        }
+
+        this.particles.sort((a, b) => b.z - a.z);
+
+        const canAttract = indexTips.length > 0;
+
+        this.particles.forEach(p => {
+            p.ax = 0;
+            p.ay = 0;
+            p.az = 0;
+
+            if (canAttract) {
+                indexTips.forEach(tip => {
+                    const dx = tip.x - p.x;
+                    const dy = tip.y - p.y;
+                    const dz = -p.z;
+
+                    const dist = Math.hypot(dx, dy, dz);
+
+                    if (dist < 320 && dist > 0) {
+                        const force = ((320 - dist) / 320) * 0.95;
+
+                        p.ax += (dx / dist) * force;
+                        p.ay += (dy / dist) * force;
+                        p.az += (dz / dist) * force;
+                    }
+                });
+
+                p.ax += Math.sin((p.y + p.z) * 0.01) * 0.015;
+                p.ay += Math.cos((p.x + p.z) * 0.01) * 0.015;
+            }
+
+            p.vx += p.ax;
+            p.vy += p.ay;
+            p.vz += p.az;
+
+            p.vx *= 0.94;
+            p.vy *= 0.94;
+            p.vz *= 0.94;
+
+            p.x += p.vx;
+            p.y += p.vy;
+            p.z += p.vz;
+
+            const limitX = W * 0.75;
+            const limitY = H * 0.75;
+            const limitZ = 260;
+
+            if (p.x < -limitX || p.x > limitX) {
+                p.vx *= -0.85;
+                p.x = Math.max(Math.min(p.x, limitX), -limitX);
+            }
+
+            if (p.y < -limitY || p.y > limitY) {
+                p.vy *= -0.85;
+                p.y = Math.max(Math.min(p.y, limitY), -limitY);
+            }
+
+            if (p.z < -limitZ || p.z > limitZ) {
+                p.vz *= -0.85;
+                p.z = Math.max(Math.min(p.z, limitZ), -limitZ);
+            }
+
+            p.hue = (p.hue + 1) % 360;
+
+            const { sx, sy, s } = this._proj(p.x, p.y, p.z);
+            const speed = Math.hypot(p.vx, p.vy, p.vz);
+            const brightness = Math.min(55 + speed * 10, 95);
+            const alpha = Math.min(s * 1.5, 1);
+
+            ctx.beginPath();
+            ctx.arc(sx, sy, Math.max(p.size * s, 0.5), 0, Math.PI * 2);
+            ctx.fillStyle = `hsla(${p.hue},100%,${brightness}%,${alpha})`;
+            ctx.fill();
+        });
+
+        // 食指光点和牵引线：定位到手指尖
+        indexTips.forEach(tip => {
+            const { sx: hsx, sy: hsy } = this._proj(tip.x, tip.y, 0);
+
+            ctx.save();
+            ctx.shadowColor = 'rgba(150,220,255,0.95)';
+            ctx.shadowBlur = 30;
+            ctx.beginPath();
+            ctx.arc(hsx, hsy, 10, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(220,245,255,1)';
+            ctx.fill();
+            ctx.restore();
+
+            this.particles.forEach(p => {
+                const dist2D = Math.hypot(tip.x - p.x, tip.y - p.y);
+                if (dist2D < 250) {
+                    const { sx, sy } = this._proj(p.x, p.y, p.z);
+                    const a = (1 - dist2D / 250) * 0.7;
+
+                    ctx.beginPath();
+                    ctx.moveTo(hsx, hsy);
+                    ctx.lineTo(sx, sy);
+                    ctx.strokeStyle = `rgba(150,220,255,${a})`;
+                    ctx.lineWidth = a * 2;
+                    ctx.stroke();
+                }
+            });
+        });
+    }
+
+    destroy() {
+        this.particles = [];
+        this.prevPalmPos = {};
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+}
+
+
+// ─────────────────────────────────────────────
+// MainController
+// ─────────────────────────────────────────────
+class MainController {
+    constructor(canvas, ctx, video) {
+        this.canvas = canvas;
+        this.ctx = ctx;
+        this.video = video;
+        this.modes = [];
+        this.currentIndex = 0;
+        this.isCrossing = false;
+        this.crossStartTime = 0;
+        this.CROSS_THRESHOLD = 1500;
+    }
+
+    register(m) {
+        this.modes.push(m);
+        return this;
+    }
+
+    start() {
+        this.modes[this.currentIndex].init();
+    }
+
+    onFrame(landmarks) {
+        if (!this.modes.length) return;
+        this._checkSwitch(landmarks);
+        this.modes[this.currentIndex].update(landmarks, this.video);
+    }
+
+    drawHUD() {
+        const names = ["Mode 1：粒子特效", "Mode 2：取景器", "Mode 3：3D 牵引"];
+        const ctx = this.ctx;
+
+        ctx.save();
+        ctx.font = "bold 20px Arial";
+        ctx.fillStyle = "rgba(255,255,255,0.75)";
+        ctx.textAlign = "left";
+        ctx.fillText(names[this.currentIndex] ?? `Mode ${this.currentIndex + 1}`, 24, 696);
+        ctx.restore();
+
+        if (!this.isCrossing) return;
+
+        const elapsed = Date.now() - this.crossStartTime;
+        if (elapsed < 0) return;
+
+        const progress = Math.min(elapsed / this.CROSS_THRESHOLD, 1.0);
+        const cx = this.canvas.width / 2;
+
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,0.15)";
+        ctx.fillRect(cx - 150, 30, 300, 20);
+
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.fillRect(cx - 150, 30, 300 * progress, 20);
+
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(cx - 150, 30, 300, 20);
+        ctx.restore();
+    }
+
+    _checkSwitch(landmarks) {
+        if (!landmarks || landmarks.length < 2) {
+            this.isCrossing = false;
+            return;
+        }
+
+        const t1 = landmarks[0][8];
+        const t2 = landmarks[1][8];
+        const dist = Math.hypot(t1.x - t2.x, t1.y - t2.y);
+
+        if (dist < 0.05) {
+            if (!this.isCrossing) {
+                this.isCrossing = true;
+                this.crossStartTime = Date.now();
+            } else if (Date.now() - this.crossStartTime > this.CROSS_THRESHOLD) {
+                this._switchNext();
+                this.isCrossing = false;
+            }
+        } else {
+            this.isCrossing = false;
+        }
+    }
+
+    _switchNext() {
+        this.modes[this.currentIndex].destroy();
+        this.currentIndex = (this.currentIndex + 1) % this.modes.length;
+        this.modes[this.currentIndex].init();
+    }
+}
+
+
+// ─────────────────────────────────────────────
+// 组装
+// ─────────────────────────────────────────────
+const controller = new MainController(canvasElement, canvasCtx, videoElement);
+
+controller
+    .register(new ParticleMode(canvasElement, canvasCtx))
+    .register(new ViewfinderMode(canvasElement, canvasCtx))
+    .register(new TetherMode(canvasElement, canvasCtx))
+    .start();
+
+
+// ─────────────────────────────────────────────
+// MediaPipe
+// ─────────────────────────────────────────────
+const hands = new Hands({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+
+hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults(results => {
+    canvasCtx.save();
+    canvasCtx.translate(canvasElement.width, 0);
+    canvasCtx.scale(-1, 1);
+    controller.onFrame(results.multiHandLandmarks);
+    canvasCtx.restore();
+    controller.drawHUD();
+});
+
+const camera = new Camera(videoElement, {
+    onFrame: async () => {
+        await hands.send({ image: videoElement });
+    },
+    width: 1280,
+    height: 720
+});
+
+camera.start();
+</script>
+</body>
+</html>
